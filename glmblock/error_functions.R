@@ -1,13 +1,14 @@
-MSE <- function(Atrain, Ytrain, Z,  Atest, Ytest) {
-  training <-  glmblock.fit(Atrain, y = Ytrain, Z = Z, intercept = TRUE)
+MSE <- function(Atrain, Ytrain, Z,  Atest, Ytest,
+                lambda = 0, gamma = 0, returnLossValue = FALSE) {
+  require(tensor)
+  training <-  glmblock.fit(Atrain, y = Ytrain, Z = Z, intercept = TRUE, gamma = gamma, lambda = lambda)
   Bhat <- training$B
   bhat <- training$b
-  Yhat <- apply(Atest, 3, function(A) sum(diag(crossprod(A, Bhat)))) + bhat
+  Yhat = tensor(Atest, Bhat, 1:2,1:2) + bhat
   return(sum((Yhat-Ytest)^2)/length(Ytest))
 }
 
 class_error <- function(Atrain, Ytrain, Z,  Atest, Ytest, lambda = 0, gamma = 0, returnLossValue = FALSE) {
-  browser()
   training <-  glmblock.fit(A = Atrain, family = "binomial", y = Ytrain, Z = Z, intercept = TRUE, 
                             lambda = lambda, gamma = gamma)
   Bhat <- training$B

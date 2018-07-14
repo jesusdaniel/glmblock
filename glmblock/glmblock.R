@@ -2,20 +2,20 @@
 library(tensor)
 library(glmnet)
 library(Matrix)
-# min l(B,b) + gamma*||B||_F^2 + lambda*||B||_1
+# min l(B,b) + gamma/2*||B||_F^2 + lambda*||B||_1
 #   s.t. B=ZPZ^T
 glmblock <- function(A, y, K, gamma = 0, lambda = 0,
                      family = "gaussian", intercept = TRUE, Z0 = NULL,
                      fclust = "SC", MAX_STEPS = 30, rho = 1, EPS = 1e-4, rho_factor = 1, autotuning = FALSE, 
                      return_path = FALSE,
+                     verbose = FALSE,
                      ...) {
-  #browser()
   # constants
   N = ncol(A)
   n = length(y)
   #Initialize functions
   if(fclust=="SC") { fclust<- spectral_clustering} #user specified clustering
-  #Initialize
+  #Initialization
   if(is.null(Z0)) {
     sigma_AY <- apply(A, c(1,2), function(a) cov(a,y)) # or do t-test for binomial
     sigma_AY <- ifelse(is.na(sigma_AY),0,sigma_AY)
@@ -23,6 +23,7 @@ glmblock <- function(A, y, K, gamma = 0, lambda = 0,
   }
   Z <- Z0
   Ar <- 2*t(apply(A, 3, uptri))
+  
   # Initialize variables
   V = matrix(0, nrow = N, ncol = N)
   init = glmblock.fit(A = A, y = y, Z = Z0,
@@ -40,7 +41,8 @@ glmblock <- function(A, y, K, gamma = 0, lambda = 0,
   rholist <- c()
   #################################################################################
   while(!converge & steps < MAX_STEPS) {
-    Bnew_step = loss_step_offset(V, W, rho, Ar, y, intercept, family, gamma, lambda)
+    Bnew_step = loss_step_offset(V, W, rho, Ar, y, intercept, family, 
+                                 gamma, lambda)
     Bnew = Bnew_step$Bhat
     b = Bnew_step$b
     W_Z = clustering_step(Bnew, V, rho, K, fclust)
@@ -53,12 +55,14 @@ glmblock <- function(A, y, K, gamma = 0, lambda = 0,
     crit_2 <- rho*sqrt(sum((Wnew - W)^2)) / N
     # 3) Change in communities
     crit_3 <- sum(abs(tcrossprod(Znew)-tcrossprod(Z))) / N^2
+    t4 <- proc.time()[3]
     converge <- (crit_1 < EPS & crit_2 < EPS)
     if(return_path) Zpath[[steps + 1]] = Matrix(Znew)
     #update values
     V = Vnew; B = Bnew; Z = Znew; W = Wnew;
     primal_crit <- c(primal_crit, crit_1); dual_crit <- c(dual_crit, crit_2); Z_crit <- c(Z_crit, crit_3)
     steps <- steps + 1
+    if(verbose) cat(paste("-- Rho:", rho, " Iteration:", steps, "Convergence criteria:", crit_1, crit_2, "\n"))
     ## Rho updating rules
     if(crit_1 < 10*crit_2) {  rho = rho*rho_factor
     }else{  if(crit_2 < 10*crit_1)  rho = rho/rho_factor  }
@@ -72,21 +76,24 @@ glmblock <- function(A, y, K, gamma = 0, lambda = 0,
 
 #implement parallel...
 glmblock_grid <- function(A, y, K, gamma = 0, lambda = 0, family = "gaussian", intercept = TRUE, Z0 = NULL,
-                          fclust = "SC", MAX_STEPS = 100, rho_grid = 1, EPS = 1e-4, return_full = FALSE, return_path = FALSE,
+                          fclust = "SC", MAX_STEPS = 100, rho_grid = 1, EPS = 1e-4, 
+                          return_full = FALSE, 
+                          return_path = FALSE,
+                          verbose = FALSE,
                           ...) {
   fit_rho <- lapply(rho_grid, function(rho) tryCatch({
-    print("Fitting rho...")
+    print(paste("Fitting rho = ", rho))
     glmblock(A, y, K, gamma = gamma, lambda = lambda,
              family = family,
              intercept = intercept, Z0 = Z0,
              fclust = fclust,
              MAX_STEPS = MAX_STEPS, rho = rho,
              EPS = EPS, rho_factor = 1, autotuning = FALSE,
-             return_path = return_path)
+             return_path = return_path, verbose = verbose)
     
   },
   error = function(e) {
-    warning("Parameter ",rho, " didn't converge!")
+    warning("Parameter ",rho, " terminated with an error!")
     return(NULL)
   }))
   if(family=="gaussian")
@@ -199,20 +206,32 @@ tune_rho <- function(V,W,b, Ar, y, intercept, K, family, gamma, lambda, fclust) 
 
 #lambda > 0 only implemented for logistic
 loss_step_offset <- function(V, W, rho, Ar, y, intercept, family, gamma = 0, lambda = 0) {
-  if(family == "binomial"){
+  if(family == "binomial" & lambda > 0){
     res <- loss_step_offset_logistic(V, W, rho, Ar, y, intercept, family, gamma, lambda)
     return(res)
   }
-  #browser()
   Vr = uptri(V)
   Wr = uptri(W)
-  offset = c(Ar%*%as.vector( (rho/(2*gamma + rho)) * Wr - (1/(2*gamma + rho))*Vr))
-  bhat = glm(y~1, family = family, offset = offset)$coefficients
-  offset = offset + bhat
-  glmfit = glmnet(x = Ar, y = y, alpha = 0, lambda = rho + 2*gamma, intercept = intercept, family = family, offset = offset)
-  b = glmfit$a0  + bhat
-  Uhat = to_matrix(glmfit$beta)
-  Bhat = Uhat + (rho/(2*gamma + rho)) *  W - (1/(2*gamma + rho))*V
+  U <- as.vector((rho / (gamma + rho)) * (Wr - (1/rho)*Vr))
+  offset = c(Ar %*% U)  
+  if(lambda == 0) {
+    bhat = glm(y~1, family = family, offset = offset)$coefficients
+    offset = offset + bhat
+    glmfit = glmnet(x = Ar, y = y, alpha = 0, 
+                    lambda = 2*(rho + gamma),  
+                    intercept = intercept, 
+                    family = family, offset = offset, 
+                    standardize = FALSE)
+    b = glmfit$a0  + bhat
+    Uhat = to_matrix(glmfit$beta)
+    Bhat = Uhat + (rho/(gamma + rho)) *  W - (1/(gamma + rho))*V
+    return(list(Bhat = Bhat, b = b))
+  }
+  glmfit1 = gaussian_ridge(X = Ar, Y = y, R = U, 
+                           gamma = 2*(rho + gamma), lambda = 2*lambda, 
+                           MAX_ITER = 50, CONV_CRIT = 1e-5)
+  Bhat <- get_matrix(glmfit1$best_beta)
+  b <- glmfit1$best_b
   return(list(Bhat = Bhat, b = b))
 }
 
@@ -220,15 +239,18 @@ loss_step_offset_logistic <- function(V, W, rho, Ar, y, intercept, family, gamma
   y01 = sapply(y, function(y_i) ifelse(y_i==max(y),1, 0))
   Vr = uptri(V)
   Wr = uptri(W)
-  R = rho / (2*gamma + rho) * (Wr - (1/rho) * Vr)
-  offset = c(Ar%*%as.vector(R))
+  U = rho / (gamma + rho) * (Wr - (1/rho) * Vr)
+  offset = c(Ar%*%as.vector(U))
   bhat = glm(y01~1, family = family, offset = offset)$coefficients
   offset = offset + bhat
   
-  glmfit = my_logistic_ridge(X = Ar, Y = y, gamma = rho + 2*gamma, offset = offset, lambda = lambda, R = R)
+  glmfit = logistic_ridge(X = Ar, Y = y, 
+                          gamma = 2*(rho + gamma), 
+                          offset = offset, lambda = 2*lambda, 
+                          R = U)
   b = glmfit$b  + bhat
   Uhat = to_matrix(glmfit$x)
-  Bhat = Uhat + (rho/(2*gamma + rho)) *  W - (1/(2*gamma + rho))*V
+  Bhat = Uhat + (rho/(gamma + rho)) *  W - (1/(gamma + rho))*V
   return(list(Bhat = Bhat, b = b))
 }
 
@@ -247,174 +269,58 @@ V_step <- function(V, B, W, rho) {
 
 
 
-glmblock_labelswitching <- function(A, y, Zinit, total_iter = 1, gamma =0,  lambda = 0,
-                                    family = "gaussian", intercept = T) {
-  K = ncol(Zinit)
-  N = nrow(Zinit)
-  Z = Matrix(Zinit)
-  iter = 0
-  while(iter < total_iter) {
-    for(i in 1:N) {
-      Z[i,] = 0*Z[i,]
-      loss_labswitch <- sapply(1:K, function(k) {
-        Z[i, k] = 1
-        return(glmblock.fit(A_tensor, y = Y, Z = Z, gamma = gamma, lambda = lambda, 
-                            family = family, intercept = intercept)$objective)
-      })
-      Z[i,which.min(loss_labswitch)] = 1
-      cat("Node", i, "done!\n", sep = " ")
-    }
-    iter = iter + 1
-  }
-  return(Z)
-}
-
-
-glmblock_labelswitching.fast <- function(A, y, Zinit, total_iter = 1, gamma =0,  lambda = 0,
-                                         family = "gaussian", intercept = T) {
-  K = ncol(Zinit)
-  N = nrow(Zinit)
-  Z = Matrix(Zinit)
-  U = 0*Z
-  iter = 0
-  ZAZ <- tensor(tensor(A, Z, 1, 1), Z, 1, 1)#= apply(A, 3, function(a) crossprod(Z, crossprod(a,Z)))
-  while(iter < total_iter) {
-    for(i in 1:N) {
-      U[i,] = Z[i,]
-      ZAZ[,which.max(U[i,]),] = as.matrix(ZAZ[,which.max(U[i,]),] - crossprod(A[i,,],Z))
-      ZAZ[,,which.max(U[i,])] = as.matrix(ZAZ[,,which.max(U[i,])] - crossprod(A[i,,],Z))
-      Z[i,] = 0*Z[i,]
-      loss_labswitch <- sapply(1:K, function(k) {
-        Z[i, k] = 1
-        ZAZ[,k,] = as.matrix(ZAZ[,k,] + crossprod(A[i,,],Z))
-        ZAZ[,,k] = as.matrix(ZAZ[,,k] + crossprod(A[i,,],Z))
-        
-        ZAZr <- as.matrix(t(apply(ZAZ, 1, function(Upp) {
-          uptri(Upp, diag =  T)
-        })))
-        weights = (tcrossprod(diag(crossprod(Z))) - crossprod(Z))
-        weights = uptri(weights, diag = T)
-        ZAZrw = ZAZr%*% diag(1/weights)
-        
-        return(glmblock.fit.quick(ZAZrw = ZAZrw, y = y,  gamma = gamma, lambda = lambda, 
-                                  family = family, intercept = intercept, weights)$objective)
-      })
-      Z[i,which.min(loss_labswitch)] = 1
-      ZAZ[,which.min(loss_labswitch),] = as.matrix(ZAZ[,which.min(loss_labswitch),] + crossprod(A[i,,],Z))
-      ZAZ[,,which.min(loss_labswitch)] = as.matrix(ZAZ[,,which.min(loss_labswitch)] + crossprod(A[i,,],Z))
-      #cat("Node", i, "done!\n", sep = " ")
-    }
-    iter = iter + 1
-  }
-  return(Z)
-}
-
-
 # fits P and b in the model
-# l_Z(P,b) + lambda* ||weights*P||_1 + gamma * ||weights*P||_F^2
+# l_Z(P,b) + lambda* ||weights*P||_1 + gamma/2 * ||weights*P||_F^2
 glmblock.fit <- function(A, y, Z, gamma = 0, lambda = 0,
                          family = "gaussian", intercept = T) {
 
-  #browser()
   Z = Matrix(Z)
   N = ncol(A)
-  #ZAZ <- tensor(tensor(A, Z, 1, 1), Z, 1, 1)
-  ZAZ = apply(A, 3, function(a) crossprod(Z, crossprod(a,Z)))
-  #ZAZr <- t(apply(ZAZ, 1, function(U) {
-  #  uptri(U, diag =  T)
-  #}))
+  ZAZ = apply(A, 3, function(a) Matrix::crossprod(Z, Matrix::crossprod(a,Z)))
   ZAZr <- as.matrix(t(sapply(ZAZ, function(U) {
+    U = 2*U
+    diag(U) = diag(U)/2
     uptri(U, diag =  T)
-  })))
-  weights = (tcrossprod(diag(crossprod(Z))) - crossprod(Z))
-  weights = uptri(weights, diag = T)
-  weights = ifelse(weights==0, 1, weights)
-  ZAZrw = ZAZr%*% diag(1/weights)
-  
-  if(family== "gaussian") {
-    Alpha = lambda / (2*gamma + lambda + 1*((lambda+gamma)==0))
-    Lambda = 2*(lambda + gamma) / (1 + Alpha)#* sum(weights) /ncol(ZAZr)
-    glmfit <- glmnet(x= ZAZrw, y = y, family = "gaussian", alpha = Alpha,#lambda = 10^seq(-5,1, by=0.1),
-                     lambda = Lambda)
-    glmfitbeta = glmfit$beta
-    b <- glmfit$a0
-  }
-  else{if(family=="binomial") {
-    fit_logistic = my_logistic_ridge(ZAZrw, y, offset = rep(0,nrow(ZAZrw)), lambda = lambda, gamma =2*gamma, 
-                                      R = rep(0,ncol(ZAZrw)), 
-                                      CONV_CRIT = 1e-8,
-                                      MAX_ITER = 500)
-    glmfitbeta = fit_logistic$best_beta
-    b <- fit_logistic$b
-  }else{
-    stop("Family not supported yet :(")
-  }}
-  #P_hatr = predict(glmfit, type = "coefficients", s=Lambda)[2:106]
-  weights = 2*(tcrossprod(diag(crossprod(Z))) - crossprod(Z))
+  })))  
+
+  weights = 2*(tcrossprod(diag(crossprod(Z)))  - crossprod(Z))
   diag(weights) = diag(weights)/2
   weights = uptri(weights, diag = T)
-  P_hatr <- glmfitbeta/weights
+  weights = ifelse(weights==0, 1, weights)
   
-  #P_hatr = predict(glmfit, type = "coefficients", s=Lambda)[2:106]
+
+  Alpha = lambda / (gamma + lambda + 1*((lambda+gamma)==0))
+  Lambda = lambda + gamma#* sum(weights) /ncol(ZAZr)
+  glmfit <- glmnet(x= ZAZr, y = y, family = family, 
+                   alpha = Alpha,
+                   lambda = Lambda*sum(weights)/length(weights),
+                   penalty.factor = weights*length(weights)/sum(weights), 
+                   standardize = FALSE)
+  glmfitbeta = glmfit$beta
+  b <- glmfit$a0
+
+  P_hatr <- glmfitbeta
+  
   Phat <- matrix(0, ncol = ncol(Z), nrow = ncol(Z))
   Phat[upper.tri(Phat, diag=T)] <- as.double(P_hatr)
   Phat <- Phat + t(Phat)
   diag(Phat) = diag(Phat)/2
   Class_error = NULL
   if(family=="gaussian") {
-    responses = predict(glmfit, newx = ZAZrw)
+    responses = predict(glmfit, newx = ZAZr)
     loss = sum((y - responses)^2)/(2*length(y))
   }
   if(family=="binomial") {
-    responses = ZAZrw%*%glmfitbeta  +  b
+    responses = predict(glmfit, newx = ZAZr, type = "class")
     loss = -sum((y==1)*responses-log(1+exp(responses)))/(length(y))
     Class_hat = max(y)*(responses >=0) + min(y)*(responses < 0)
     Class_error = sum(Class_hat != y) / length(y)
   }
-  weights <- tcrossprod(diag(crossprod(Z)))# - crossprod(Z)
-  penalty <- lambda * sum(abs(weights*Phat)) + gamma * sum(weights*(Phat)^2)
+  weights <- tcrossprod(diag(crossprod(Z))) - crossprod(Z)
+  penalty <- lambda * sum(abs(weights*Phat)) + gamma/2 * sum(weights*(Phat)^2)
   objective <- loss + penalty
   #diag(Phat) <- diag(Phat) / 2
   return(list(B= Z%*%(Phat%*%t(Z)), b = b, objective = objective, Class_error = Class_error))
 }
 
-# fits P and b in the model
-# l_Z(P,b) + lambda* ||weights*P||_1 + gamma * ||weights*P||_F^2
-# Assumes Z is sparse Matrix
-# only returns objective value
-glmblock.fit.quick <- function(ZAZrw, y, gamma = 0, lambda = 0, family = "gaussian", intercept = T, weights) {
-  #browser()
-  
-  if(family== "gaussian") {
-    Alpha = lambda / (2*gamma + lambda + 1*((lambda+gamma)==0))
-    Lambda = 2*(lambda + gamma) / (1 + Alpha)#* sum(weights) /ncol(ZAZr)
-    glmfit <- glmnet(x= ZAZrw, y = y, family = "gaussian", alpha = Alpha,#lambda = 10^seq(-5,1, by=0.1),
-                     lambda = Lambda)
-    glmfitbeta = glmfit$beta
-    b <- glmfit$a0
-  }
-  else{if(family=="binomial") {
-    fit_logistic = my_logistic_ridge(ZAZrw, y, offset = rep(0,nrow(ZAZrw)), lambda = lambda, gamma =2*gamma, 
-                                      R = rep(0,ncol(ZAZrw)), 
-                                      CONV_CRIT = 1e-8,
-                                      MAX_ITER = 500)
-    glmfitbeta = fit_logistic$best_beta
-    b <- fit_logistic$b
-  }else{
-    stop("Family not supported yet :(")
-  }}
-  Class_error = NULL
-  if(family=="gaussian") {
-    responses = predict(glmfit, newx = ZAZrw)
-    loss = sum((y - responses)^2)/(2*length(y))
-  }
-  if(family=="binomial") {
-    responses = ZAZrw%*%glmfitbeta  +  b
-    loss = -sum((y==1)*responses-log(1+exp(responses)))/(length(y))
-    Class_hat = max(y)*(responses >=0) + min(y)*(responses < 0)
-    Class_error = sum(Class_hat != y) / length(y)
-  }
-  penalty <- lambda * sum(abs(glmfitbeta)) + gamma * sum(weights*(glmfitbeta/weights)^2)#check weights
-  objective <- loss + penalty
-  return(list(objective = objective, Class_error = Class_error))
-}
+

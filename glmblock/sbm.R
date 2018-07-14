@@ -30,18 +30,7 @@ erdos_renyi_1_2 <- function(N) {
   return(A)
 }
 
-spectral_clustering <- function(A, K=4) {
-  #browser()
-  eig <- eigen(A)
-  largest = order(abs(eig$values),decreasing = T)
-  lat_pos <- eig$vectors[,largest[1:K]] %*% diag(sqrt(abs(eig$values[largest[1:K]])))
-  clust <- kmeans(lat_pos, centers = K, nstart = 100)
-  Z <- t(sapply(clust$cluster, function(k) {
-    u = rep(0, K)
-    u[k] = 1
-    return(u)}))
-  return(Z)
-}
+
 
 sbm_normal <- function(p,q, K=4, nk=10) {
   Psi = (p-q)*diag(K)  + q
