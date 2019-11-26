@@ -3,33 +3,9 @@
 #   s.t. B=ZPZ^T
 
 
-#' 
-#' Function to perform block penalized regression with supervised community detection
-#' 
-#' @param Adj_list a list with adjacency matrices of the same size n x n
-#' @param y a vector of responses
-#' @param family response type, either "gaussian" for continuous responses, or "binomial" for classification
-#' @param intercept indicate whether intercept should be fitted
-#' @param K number of communities in the block constraint. If \code{initial.communities} is given, then this parameter is ignored.
-#' @param gamma ridge penalty parameter
-#' @param lambda lasso penalty parameter
-#' @param method.communities method for supervised community detection. The options available are "SC" for
-#' spectral clustering or "ADMM" for alternating direction method of multipliers. Default is \code{"SC"}.
-#' @param rho.grid ADMM penalty parameters to try in the optimization problem.
-#' @param Z0 membership matrix of size n by K, with the initial value for the community membership search of ADMM.
-#' @param fclust clustering function for approximating the solution of the block constraint. Currently only spectral clustering ("SC") is implemented.
-#' @param MAX_STEPS maximum number of iterations of the ADMM algorithm
-#' @param EPS stopping criteria od ADMM algorithm
-#' @param rho.factor change of rho on each iteration of ADMM algorithm
-#' @param verbose print output on each iteration of ADMM
-#' 
-#' @return 
-#' 
-#' @references 
-#' 
-#' @author Jes\'us Arroyo <jarroyor@umich.edu>
+
 glmblock <- function(Adj_list, y, 
-                     family = "gaussian", intercept = TRUE, # regression parameters
+                     family = c("gaussian", "binomial"), intercept = TRUE, # regression parameters
                      K, gamma = 0, lambda = 0,              # tuning parameters
                      method.communities = c("SC", "ADMM"),
                      rho.grid = 10^seq(-2, 3),                          # controls the performance of ADMM
@@ -38,6 +14,35 @@ glmblock <- function(Adj_list, y,
                      EPS = 1e-4, rho.factor = 1, 
                      verbose = FALSE,
                      ...) {
+  #' 
+  #' Block-constrained GLM for graph data
+  #' 
+  #' Function to perform block penalized regression with supervised community detection
+  #' 
+  #' @param Adj_list a list with adjacency matrices of the same size n x n
+  #' @param y a vector of responses
+  #' @param family response type, either "gaussian" for continuous responses, or "binomial" for classification
+  #' @param intercept indicate whether intercept should be fitted
+  #' @param K number of communities in the block constraint. If \code{initial.communities} is given, then this parameter is ignored.
+  #' @param gamma ridge penalty parameter
+  #' @param lambda lasso penalty parameter
+  #' @param method.communities method for supervised community detection. The options available are "SC" for
+  #' spectral clustering or "ADMM" for alternating direction method of multipliers. Default is \code{"SC"}.
+  #' @param rho.grid ADMM penalty parameters to try in the optimization problem.
+  #' @param Z0 membership matrix of size n by K, with the initial value for the community membership search of ADMM.
+  #' @param fclust clustering function for approximating the solution of the block constraint. Currently only spectral clustering ("SC") is implemented.
+  #' @param MAX_STEPS maximum number of iterations of the ADMM algorithm
+  #' @param EPS stopping criteria od ADMM algorithm
+  #' @param rho.factor change of rho on each iteration of ADMM algorithm
+  #' @param verbose print output on each iteration of ADMM
+  #' 
+  #' @return A list containing an object returned by \code{glmblock.fit} and
+  #' the membership matrix obtained by supervised community detection.
+  #' 
+  #' @references 
+  #' 
+  #' @author Jes\'us Arroyo <jarroyor@umich.edu>
+  #' 
   # constants
   n = ncol(Adj_list[[1]])
   m = length(y)
@@ -46,6 +51,7 @@ glmblock <- function(Adj_list, y,
   #Initialize functions
   if(fclust=="SC") { fclust<- spectral_clustering} #user specified clustering
   # Methods
+  family <-  match.arg(family, c("gaussian", "binomial"))
   method.communities <-  match.arg(method.communities, c("SC", "ADMM", "user"))
   ############################################################################
   ############################################################################

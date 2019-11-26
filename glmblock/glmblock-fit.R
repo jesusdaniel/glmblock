@@ -1,26 +1,27 @@
-#' 
-#' Function to perform block penalized regression using a specified community membership
-#' 
-#' @param Adj_list a list with adjacency matrices of the same size n x n
-#' @param y a vector of responses
-#' @param family response type, either "gaussian" for continuous responses, or "binomial" for classification
-#' @param intercept indicate whether intercept should be fitted
-#' @param Z membership matrix of size n by K specifying the community assignments
-#' @param gamma ridge penalty parameter
-#' @param lambda lasso penalty parameter
-#' 
-#' @return a list containing the fitted coefficents matrix \code{B}, intercept \code{b}, 
-#' and the value of the objective function and classification error (if binomial).
-#' 
-#' @references 
-#' 
-#' @author Jes\'us Arroyo <jarroyor@umich.edu>
-# fits B and b in the model
-# l(B,b) + lambda* ||weights*B||_1 + gamma/2 * ||weights*B||_F^2
-# subject to B = ZCZ^T
+
 glmblock.fit <- function(Adj_list, y, 
                          family = "gaussian", intercept = T,
                          Z, gamma = 0, lambda = 0) {
+  #' 
+  #' Function to perform block penalized regression using a specified community membership
+  #' 
+  #' @param Adj_list a list with adjacency matrices of the same size n x n
+  #' @param y a vector of responses
+  #' @param family response type, either "gaussian" for continuous responses, or "binomial" for classification
+  #' @param intercept indicate whether intercept should be fitted
+  #' @param Z membership matrix of size n by K specifying the community assignments
+  #' @param gamma ridge penalty parameter
+  #' @param lambda lasso penalty parameter
+  #' 
+  #' @return a list containing the fitted coefficents matrix \code{B}, intercept \code{b}, 
+  #' and the value of the objective function and classification error (if binomial).
+  #' 
+  #' @references 
+  #' 
+  #' @author Jes\'us Arroyo <jarroyor@umich.edu>
+  # fits B and b in the model
+  # l(B,b) + lambda* ||weights*B||_1 + gamma/2 * ||weights*B||_F^2
+  # subject to B = ZCZ^T
   Z = Matrix(Z)
   n = ncol(Adj_list[[1]])
   m = length(Adj_list)
